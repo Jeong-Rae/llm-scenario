@@ -1,0 +1,67 @@
+:root {
+  --ink: var(--vapor-color-gray-900);
+  --paper: var(--vapor-color-gray-000);
+  --edge: var(--vapor-color-gray-200);
+  --panel: var(--vapor-color-gray-000);
+  --panel-strong: var(--vapor-color-gray-000);
+  --dash: var(--vapor-color-gray-200);
+}
+body {
+  margin: 0;
+  font-family: "Space Grotesk", "IBM Plex Sans", ui-sans-serif, system-ui;
+  color: var(--ink);
+  background: var(--paper);
+}
+.page {
+  padding: 40px clamp(20px, 4vw, 60px);
+  display: grid;
+  gap: 24px;
+}
+.hero {
+  display: grid;
+  gap: 12px;
+}
+.hero h1 {
+  font-size: clamp(28px, 4vw, 44px);
+  margin: 0;
+}
+.hero p {
+  max-width: 680px;
+  margin: 0;
+}
+.grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+.card {
+  border: 1px solid var(--edge);
+  background: var(--panel);
+  border-radius: 16px;
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+}
+.row {
+  display: grid;
+  gap: 8px;
+}
+.output {
+  min-height: 120px;
+  padding: 12px;
+  background: var(--panel-strong);
+  border-radius: 12px;
+  border: 1px dashed var(--dash);
+  white-space: pre-wrap;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--vapor-color-gray-050);
+}
+.secondary {}

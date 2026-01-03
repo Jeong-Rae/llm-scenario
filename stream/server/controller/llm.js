@@ -1,93 +1,32 @@
 const { LLMService } = require("../service/llm");
 
-// 기술 블로그 예시 컨트롤러: express 스타일 핸들러.
 const service = new LLMService();
 
-const postStream = async (req, res) => {
-  const { conversationId, messageId, prompt } = req.body;
-  let emitter;
-  try {
-    emitter = await service.streamAndPersist({
-      conversationId,
-      messageId,
-      prompt,
-    });
-  } catch (error) {
-    console.error("[서버] 스트림 요청 실패", error);
-    res.status(500).json({ error: "LLM 요청 실패" });
-    return;
-  }
+/**
+ * 1. Post 요청으로 keepalive chunk 형식으로 SSE와 같은 요청을 보낸다.
+ * body로 conversationId를 보내고, server에서 conversation의 가장 마지막 messageId를 만들어준다.
+ * client에 stream으로 conversationId와 messageId를 먼저 응답을 보내준다.
+ * 이후 AI에게 사용자의 message를 보내고, ai에서 stream이 도착하면, 다시 client stream으로 emit한다.
+ * ai 응답이 종료되면, 결과는 FakeMongoModel에 저장하고, client에게는 done 응답을 보내며 sse 연결을 close한다.
+ */
 
-  res.setHeader("Content-Type", "text/event-stream");
-  emitter.on("token", (token) => {
-    res.write(`data: ${token}\n\n`);
-  });
-  emitter.on("done", () => res.end());
-  emitter.on("error", (error) => {
-    console.error("[서버] 스트림 처리 오류", error);
-    res.write(`data: 오류가 발생했습니다.\n\n`);
-    res.end();
-  });
-};
+/**
+ * 2. Post요청으로 conversationId와 Message를 보낸다.
+ * 즉시 AI에게 stream 요청을 보내고, client에는 MessageId를 response로 보낸다.
+ * 
+ * 이후 Client는 GET을 통해 SSE를 보내고, 거기에는 conversationId와 messageId를 쿼리로 포함시켜서 보낸다.
+ * 
+ */
 
-const postInvokeCache = async (req, res) => {
-  const { conversationId, messageId, prompt } = req.body;
-  try {
-    const result = await service.invokeAndCache({
-      conversationId,
-      messageId,
-      prompt,
-    });
-    res.json({ ok: true, ...result });
-  } catch (error) {
-    console.error("[서버] invoke 요청 실패", error);
-    res.status(500).json({ error: "LLM 요청 실패" });
-  }
-};
-
-const getCachedTokens = (req, res) => {
-  const { conversationId, messageId } = req.query;
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Pragma", "no-cache");
-  const result = service.getCachedTokens({ conversationId, messageId });
-  res.json(result);
-};
-
-const getReplayWithCursor = (req, res) => {
-  const { conversationId, messageId, cursor } = req.query;
-  service
-    .getTokensWithCursor({
-      conversationId,
-      messageId,
-      cursor: Number(cursor ?? 0),
-    })
-    .then((result) => res.json(result));
-};
-
-const getReplayWithBuffer = (req, res) => {
-  const { conversationId, messageId, cursor } = req.query;
-  service
-    .getTokensWithCursorAndBuffer({
-      conversationId,
-      messageId,
-      cursor: Number(cursor ?? 0),
-    })
-    .then((result) => res.json(result));
-};
 
 const registerRoutes = (app) => {
-  app.post("/llm/stream", postStream);
-  app.post("/llm/invoke-cache", postInvokeCache);
-  app.get("/llm/cache", getCachedTokens);
-  app.get("/llm/replay", getReplayWithCursor);
-  app.get("/llm/replay-buffer", getReplayWithBuffer);
 };
 
 module.exports = {
   registerRoutes,
   postStream,
-  postInvokeCache,
-  getCachedTokens,
+  postStartWrite,
+  getReadWindow,
   getReplayWithCursor,
   getReplayWithBuffer,
 };

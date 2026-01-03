@@ -10,16 +10,16 @@ const apiFetch = (path, options) =>
     ...options,
   });
 
-const useIds = () => {
+const useIds = (prefix) => {
   const now = useMemo(() => Date.now().toString(36).slice(-6), []);
   return {
-    conversationId: `c-${now}`,
-    messageId: `m-${now}`,
+    conversationId: `${prefix}-c-${now}`,
+    messageId: `${prefix}-m-${now}`,
   };
 };
 
 const StreamCard = () => {
-  const ids = useIds();
+  const ids = useIds("s1");
   const [prompt, setPrompt] = useState("간단한 인사말을 작성해줘.");
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -27,7 +27,7 @@ const StreamCard = () => {
   const startStream = async () => {
     setBusy(true);
     setOutput("");
-    const res = await apiFetch("/llm/stream", {
+    const res = await apiFetch("/scenario1/stream", {
       method: "POST",
       body: JSON.stringify({ ...ids, prompt }),
     });
@@ -67,7 +67,7 @@ const StreamCard = () => {
 };
 
 const CacheCard = () => {
-  const ids = useIds();
+  const ids = useIds("s2");
   const [prompt, setPrompt] = useState("영화 장면을 요약해줘.");
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -77,7 +77,7 @@ const CacheCard = () => {
   const invoke = async () => {
     setBusy(true);
     setOutput("");
-    await apiFetch("/llm/invoke-cache", {
+    await apiFetch("/scenario2/write", {
       method: "POST",
       body: JSON.stringify({ ...ids, prompt }),
     });
@@ -89,7 +89,7 @@ const CacheCard = () => {
   const poll = async () => {
     if (!polling || !started) return;
     const res = await apiFetch(
-      `/llm/cache?conversationId=${ids.conversationId}&messageId=${ids.messageId}`
+      `/scenario2/read?conversationId=${ids.conversationId}&messageId=${ids.messageId}`
     );
     const data = await res.json();
     if (data.tokens?.length) {
@@ -113,7 +113,7 @@ const CacheCard = () => {
 
   return (
     <div className="card">
-      <span className="pill">시나리오 2 · POST + 캐시 + GET</span>
+      <span className="pill">시나리오 2 · POST(쓰기) + GET(읽기)</span>
       <div className="row">
         <TextInput value={prompt} onChange={(e) => setPrompt(e.target.value)} />
       </div>
@@ -126,7 +126,7 @@ const CacheCard = () => {
 };
 
 const CursorCard = () => {
-  const ids = useIds();
+  const ids = useIds("s3");
   const [prompt, setPrompt] = useState("이벤트 스트리밍을 설명해줘.");
   const [cursor, setCursor] = useState(0);
   const [output, setOutput] = useState("");
@@ -135,7 +135,7 @@ const CursorCard = () => {
   const invoke = async () => {
     setOutput("");
     setCursor(0);
-    await apiFetch("/llm/invoke-cache", {
+    await apiFetch("/scenario2/write", {
       method: "POST",
       body: JSON.stringify({ ...ids, prompt }),
     });
@@ -145,7 +145,7 @@ const CursorCard = () => {
   const replay = async () => {
     if (!ready) return;
     const res = await apiFetch(
-      `/llm/replay?conversationId=${ids.conversationId}&messageId=${ids.messageId}&cursor=${cursor}`
+      `/scenario3/read-with-cursor?conversationId=${ids.conversationId}&messageId=${ids.messageId}&cursor=${cursor}`
     );
     const data = await res.json();
     setOutput((prev) => prev + (data.tokens ?? []).join(""));
@@ -170,7 +170,7 @@ const CursorCard = () => {
 };
 
 const BufferCard = () => {
-  const ids = useIds();
+  const ids = useIds("s4");
   const [prompt, setPrompt] = useState("레이스 컨디션을 설명해줘.");
   const [cursor, setCursor] = useState(0);
   const [output, setOutput] = useState("");
@@ -179,7 +179,7 @@ const BufferCard = () => {
   const invoke = async () => {
     setOutput("");
     setCursor(0);
-    await apiFetch("/llm/invoke-cache", {
+    await apiFetch("/scenario2/write", {
       method: "POST",
       body: JSON.stringify({ ...ids, prompt }),
     });
@@ -189,7 +189,7 @@ const BufferCard = () => {
   const replay = async () => {
     if (!ready) return;
     const res = await apiFetch(
-      `/llm/replay-buffer?conversationId=${ids.conversationId}&messageId=${ids.messageId}&cursor=${cursor}`
+      `/scenario4/read-with-buffer?conversationId=${ids.conversationId}&messageId=${ids.messageId}&cursor=${cursor}`
     );
     const data = await res.json();
     setOutput((prev) => prev + (data.tokens ?? []).join(""));

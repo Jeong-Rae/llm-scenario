@@ -27,7 +27,13 @@ class FakeAI {
   }
 
   async invoke() {
-    return { content: this.text };
+    let output = "";
+    for (let i = 0; i < this.text.length; i += this.chunkSize) {
+      const jitter = this.jitterMs > 0 ? randomInt(0, this.jitterMs) : 0;
+      await sleep(this.delayMs + jitter);
+      output += this.text.slice(i, i + this.chunkSize);
+    }
+    return { content: output };
   }
 }
 

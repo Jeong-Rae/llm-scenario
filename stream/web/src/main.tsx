@@ -1,16 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Button, TextInput } from "@vapor-ui/core";
 import "@vapor-ui/core/styles.css";
 import "./styles.css";
+import { useEffect, useMemo, useState } from "react";
 
-const apiFetch = (path, options) =>
+const apiFetch = (path: string, options?: RequestInit) =>
   fetch(path, {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
 
-const useIds = (prefix) => {
+type Ids = {
+  conversationId: string;
+  messageId: string;
+};
+
+const useIds = (prefix: string): Ids => {
   const now = useMemo(() => Date.now().toString(36).slice(-6), []);
   return {
     conversationId: `${prefix}-c-${now}`,
@@ -20,9 +25,9 @@ const useIds = (prefix) => {
 
 const StreamCard = () => {
   const ids = useIds("s1");
-  const [prompt, setPrompt] = useState("간단한 인사말을 작성해줘.");
-  const [output, setOutput] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [prompt, setPrompt] = useState<string>("간단한 인사말을 작성해줘.");
+  const [output, setOutput] = useState<string>("");
+  const [busy, setBusy] = useState<boolean>(false);
 
   const startStream = async () => {
     setBusy(true);
@@ -41,6 +46,7 @@ const StreamCard = () => {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (!value) continue;
       buffer += decoder.decode(value, { stream: true });
       const parts = buffer.split("\n\n");
       buffer = parts.pop() ?? "";
@@ -56,7 +62,7 @@ const StreamCard = () => {
     <div className="card">
       <span className="pill">시나리오 1 · POST + 스트리밍</span>
       <div className="row">
-        <TextInput value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+        <TextInput value={prompt} onValueChange={(value) => setPrompt(value)} />
       </div>
       <Button onClick={startStream} disabled={busy}>
         {busy ? "스트리밍 중..." : "스트림 시작"}
@@ -68,11 +74,11 @@ const StreamCard = () => {
 
 const CacheCard = () => {
   const ids = useIds("s2");
-  const [prompt, setPrompt] = useState("영화 장면을 요약해줘.");
-  const [output, setOutput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [polling, setPolling] = useState(false);
-  const [started, setStarted] = useState(false);
+  const [prompt, setPrompt] = useState<string>("영화 장면을 요약해줘.");
+  const [output, setOutput] = useState<string>("");
+  const [busy, setBusy] = useState<boolean>(false);
+  const [polling, setPolling] = useState<boolean>(false);
+  const [started, setStarted] = useState<boolean>(false);
 
   const invoke = async () => {
     setBusy(true);
@@ -91,9 +97,12 @@ const CacheCard = () => {
     const res = await apiFetch(
       `/scenario2/read?conversationId=${ids.conversationId}&messageId=${ids.messageId}`
     );
-    const data = await res.json();
+    const data = (await res.json()) as {
+      tokens?: string[];
+      done?: boolean;
+    };
     if (data.tokens?.length) {
-      setOutput((prev) => prev + data.tokens.join(""));
+      setOutput((prev) => prev + (data?.tokens || []).join(""));
     }
     if (data.done) {
       setPolling(false);
@@ -115,7 +124,7 @@ const CacheCard = () => {
     <div className="card">
       <span className="pill">시나리오 2 · POST(쓰기) + GET(읽기)</span>
       <div className="row">
-        <TextInput value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+        <TextInput value={prompt} onValueChange={(value) => setPrompt(value)} />
       </div>
       <Button className="secondary" onClick={invoke} disabled={busy}>
         {busy ? "요청 중..." : "요청"}
@@ -127,10 +136,12 @@ const CacheCard = () => {
 
 const CursorCard = () => {
   const ids = useIds("s3");
-  const [prompt, setPrompt] = useState("이벤트 스트리밍을 설명해줘.");
-  const [cursor, setCursor] = useState(0);
-  const [output, setOutput] = useState("");
-  const [ready, setReady] = useState(false);
+  const [prompt, setPrompt] = useState<string>(
+    "이벤트 스트리밍을 설명해줘."
+  );
+  const [cursor, setCursor] = useState<number>(0);
+  const [output, setOutput] = useState<string>("");
+  const [ready, setReady] = useState<boolean>(false);
 
   const invoke = async () => {
     setOutput("");
@@ -147,7 +158,10 @@ const CursorCard = () => {
     const res = await apiFetch(
       `/scenario3/read-with-cursor?conversationId=${ids.conversationId}&messageId=${ids.messageId}&cursor=${cursor}`
     );
-    const data = await res.json();
+    const data = (await res.json()) as {
+      tokens?: string[];
+      nextCursor?: number;
+    };
     setOutput((prev) => prev + (data.tokens ?? []).join(""));
     setCursor(data.nextCursor ?? cursor);
   };
@@ -156,7 +170,7 @@ const CursorCard = () => {
     <div className="card">
       <span className="pill">시나리오 3 · 커서 리플레이</span>
       <div className="row">
-        <TextInput value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+        <TextInput value={prompt} onValueChange={(value) => setPrompt(value)} />
       </div>
       <div className="row">
         <Button onClick={invoke}>요청</Button>
@@ -171,10 +185,10 @@ const CursorCard = () => {
 
 const BufferCard = () => {
   const ids = useIds("s4");
-  const [prompt, setPrompt] = useState("레이스 컨디션을 설명해줘.");
-  const [cursor, setCursor] = useState(0);
-  const [output, setOutput] = useState("");
-  const [ready, setReady] = useState(false);
+  const [prompt, setPrompt] = useState<string>("레이스 컨디션을 설명해줘.");
+  const [cursor, setCursor] = useState<number>(0);
+  const [output, setOutput] = useState<string>("");
+  const [ready, setReady] = useState<boolean>(false);
 
   const invoke = async () => {
     setOutput("");
@@ -191,7 +205,10 @@ const BufferCard = () => {
     const res = await apiFetch(
       `/scenario4/read-with-buffer?conversationId=${ids.conversationId}&messageId=${ids.messageId}&cursor=${cursor}`
     );
-    const data = await res.json();
+    const data = (await res.json()) as {
+      tokens?: string[];
+      nextCursor?: number;
+    };
     setOutput((prev) => prev + (data.tokens ?? []).join(""));
     setCursor(data.nextCursor ?? cursor);
   };
@@ -200,7 +217,7 @@ const BufferCard = () => {
     <div className="card">
       <span className="pill">시나리오 4 · 커서 + 버퍼</span>
       <div className="row">
-        <TextInput value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+        <TextInput value={prompt} onValueChange={(value) => setPrompt(value)} />
       </div>
       <div className="row">
         <Button onClick={invoke}>요청</Button>
@@ -232,4 +249,7 @@ const App = () => (
 );
 
 const root = document.getElementById("root");
+if (!root) {
+  throw new Error("root element not found");
+}
 createRoot(root).render(<App />);

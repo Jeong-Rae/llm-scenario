@@ -85,6 +85,7 @@ const writeSse = (res: Response, event: string, data?: unknown) => {
   const payload = data === undefined ? "" : JSON.stringify(data);
   res.write(`event: ${event}\n`);
   res.write(`data: ${payload}\n\n`);
+  console.log(`SSE sent event: ${event}, data: ${payload}`);
 };
 
 const startHeartbeat = (res: Response) => {
@@ -353,12 +354,6 @@ const getReplayWithBuffer = (
 
   drainBuffer();
   live = true;
-
-  if (errorPayload) {
-    writeSse(res, "error", { message: errorPayload.message });
-    cleanup();
-    return;
-  }
 
   if (donePayload || session.done) {
     writeSse(res, "done", donePayload ?? { messageId });

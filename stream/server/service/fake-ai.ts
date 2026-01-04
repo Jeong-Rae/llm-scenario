@@ -7,7 +7,7 @@ const randomInt = (min: number, max: number) =>
   Math.floor(Math.random() * (max - min + 1)) + min;
 
 const readLoremText = (): string => {
-  const filePath = path.join(__dirname, "..", "..", "lorem.txt");
+  const filePath = path.join(process.cwd(), "lorem.txt");
   return fs.readFileSync(filePath, "utf8");
 };
 

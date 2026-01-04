@@ -93,10 +93,9 @@ class LLMService {
     onDone,
     onError,
   }: StreamOnePhaseOptions): Promise<void> {
-    const ai = this.aiFactory({ userMessage });
-    const chunks: string[] = [];
-
     try {
+      const ai = this.aiFactory({ userMessage });
+      const chunks: string[] = [];
       for await (const { content } of ai.stream()) {
         chunks.push(content);
         onChunk?.({ content });
@@ -129,9 +128,8 @@ class LLMService {
     session: StreamSession,
     userMessage?: string
   ): Promise<void> {
-    const ai = this.aiFactory({ userMessage });
-
     try {
+      const ai = this.aiFactory({ userMessage });
       for await (const { content } of ai.stream()) {
         const chunk = { seq: session.nextSeq, content };
         session.nextSeq += 1;

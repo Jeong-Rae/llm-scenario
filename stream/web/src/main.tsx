@@ -1,8 +1,8 @@
+import { useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Button, TextInput } from "@vapor-ui/core";
 import "@vapor-ui/core/styles.css";
 import "./styles.css";
-import { useEffect, useMemo, useState } from "react";
 
 const apiFetch = (path: string, options?: RequestInit) =>
   fetch(path, {
@@ -10,21 +10,108 @@ const apiFetch = (path: string, options?: RequestInit) =>
     ...options,
   });
 
-type Ids = {
-  conversationId: string;
-  messageId: string;
+type SseEvent = {
+  event: string;
+  data: string;
 };
 
-const useIds = (prefix: string): Ids => {
-  const now = useMemo(() => Date.now().toString(36).slice(-6), []);
-  return {
-    conversationId: `${prefix}-c-${now}`,
-    messageId: `${prefix}-m-${now}`,
+type EventSourceHandlers = {
+  onChunk?: (data: string) => void;
+  onReplay?: (data: string) => void;
+  onDone?: (data: string) => void;
+  onError?: (data: string | null) => void;
+};
+
+const readPostSseStream = async (
+  res: Response,
+  onEvent: (event: SseEvent) => void
+) => {
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+
+    for (const part of parts) {
+      const lines = part.split("\n");
+      let event = "message";
+      const dataLines: string[] = [];
+
+      for (const line of lines) {
+        if (!line || line.startsWith(":")) continue;
+        if (line.startsWith("event:")) {
+          event = line.slice("event:".length).trim();
+          continue;
+        }
+        if (line.startsWith("data:")) {
+          dataLines.push(line.slice("data:".length).trim());
+        }
+      }
+
+      if (dataLines.length === 0) continue;
+      onEvent({ event, data: dataLines.join("\n") });
+    }
+  }
+};
+
+const openEventSource = (url: string, handlers: EventSourceHandlers) => {
+  const source = new EventSource(url);
+  let closed = false;
+  const close = () => source.close();
+
+  const bindMessage = (
+    eventName: "chunk" | "replay" | "done",
+    handler?: (data: string) => void
+  ) => {
+    if (!handler) return;
+    source.addEventListener(eventName, (event) => {
+      if ("data" in event && typeof event.data === "string") {
+        handler(event.data);
+      }
+      if (eventName === "done") {
+        closed = true;
+        close();
+      }
+    });
   };
+
+  bindMessage("chunk", handlers.onChunk);
+  bindMessage("replay", handlers.onReplay);
+  bindMessage("done", handlers.onDone);
+
+  source.addEventListener("error", (event) => {
+    const data =
+      "data" in event && typeof event.data === "string" ? event.data : null;
+    if (closed) return;
+    handlers.onError?.(data);
+    close();
+  });
+
+  return source;
+};
+
+const parseSseData = <T,>(data: string): T | null => {
+  try {
+    return JSON.parse(data) as T;
+  } catch {
+    return null;
+  }
+};
+
+const useConversationId = (prefix: string): string => {
+  const now = useMemo(() => Date.now().toString(36).slice(-6), []);
+  return `${prefix}-c-${now}`;
 };
 
 const StreamCard = () => {
-  const ids = useIds("s1");
+  const conversationId = useConversationId("s1");
   const [prompt, setPrompt] = useState<string>("간단한 인사말을 작성해줘.");
   const [output, setOutput] = useState<string>("");
   const [busy, setBusy] = useState<boolean>(false);
@@ -32,29 +119,21 @@ const StreamCard = () => {
   const startStream = async () => {
     setBusy(true);
     setOutput("");
-    const res = await apiFetch("/scenario1/stream", {
+    const res = await apiFetch("/chat/one-phase", {
       method: "POST",
-      body: JSON.stringify({ ...ids, prompt }),
+      body: JSON.stringify({ conversationId, message: prompt }),
     });
-    if (!res.body) {
-      setBusy(false);
-      return;
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split("\n\n");
-      buffer = parts.pop() ?? "";
-      for (const part of parts) {
-        const line = part.replace(/^data:\s?/, "");
-        setOutput((prev) => prev + line);
+    await readPostSseStream(res, ({ event, data }) => {
+      if (event === "chunk") {
+        const payload = parseSseData<{ content: string }>(data);
+        if (payload?.content) {
+          setOutput((prev) => prev + payload.content);
+        }
       }
-    }
+      if (event === "done" || event === "error") {
+        setBusy(false);
+      }
+    });
     setBusy(false);
   };
 
@@ -73,52 +152,40 @@ const StreamCard = () => {
 };
 
 const CacheCard = () => {
-  const ids = useIds("s2");
+  const conversationId = useConversationId("s2");
+  const sourceRef = useRef<EventSource | null>(null);
   const [prompt, setPrompt] = useState<string>("영화 장면을 요약해줘.");
   const [output, setOutput] = useState<string>("");
   const [busy, setBusy] = useState<boolean>(false);
-  const [polling, setPolling] = useState<boolean>(false);
-  const [started, setStarted] = useState<boolean>(false);
+
+  const startReadWindow = async (nextConversationId: string, id: string) => {
+    sourceRef.current?.close();
+    const url = `/chat/read-window?conversationId=${nextConversationId}&messageId=${id}`;
+    const source = openEventSource(url, {
+      onChunk: (data) => {
+        const payload = parseSseData<{ content: string }>(data);
+        if (payload?.content) {
+          setOutput((prev) => prev + payload.content);
+        }
+      },
+    });
+    sourceRef.current = source;
+  };
 
   const invoke = async () => {
     setBusy(true);
     setOutput("");
-    await apiFetch("/scenario2/write", {
+    const res = await apiFetch("/chat/write-start", {
       method: "POST",
-      body: JSON.stringify({ ...ids, prompt }),
+      body: JSON.stringify({ conversationId, message: prompt }),
     });
-    setBusy(false);
-    setStarted(true);
-    setPolling(true);
-  };
-
-  const poll = async () => {
-    if (!polling || !started) return;
-    const res = await apiFetch(
-      `/scenario2/read?conversationId=${ids.conversationId}&messageId=${ids.messageId}`
-    );
     const data = (await res.json()) as {
-      tokens?: string[];
-      done?: boolean;
+      conversationId: string;
+      messageId: string;
     };
-    if (data.tokens?.length) {
-      setOutput((prev) => prev + (data?.tokens || []).join(""));
-    }
-    if (data.done) {
-      setPolling(false);
-    }
+    setBusy(false);
+    await startReadWindow(data.conversationId, data.messageId);
   };
-
-  useEffect(() => {
-    if (!polling || !started) return;
-    const id = setInterval(poll, 500);
-    return () => clearInterval(id);
-  }, [polling, started]);
-
-  useEffect(() => {
-    setPolling(false);
-    setStarted(false);
-  }, []);
 
   return (
     <div className="card">
@@ -135,35 +202,60 @@ const CacheCard = () => {
 };
 
 const CursorCard = () => {
-  const ids = useIds("s3");
+  const conversationId = useConversationId("s3");
+  const sourceRef = useRef<EventSource | null>(null);
   const [prompt, setPrompt] = useState<string>(
     "이벤트 스트리밍을 설명해줘."
   );
-  const [cursor, setCursor] = useState<number>(0);
+  const [messageId, setMessageId] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<number>(-1);
   const [output, setOutput] = useState<string>("");
   const [ready, setReady] = useState<boolean>(false);
 
   const invoke = async () => {
     setOutput("");
-    setCursor(0);
-    await apiFetch("/scenario2/write", {
+    setCursor(-1);
+    const res = await apiFetch("/chat/write-start", {
       method: "POST",
-      body: JSON.stringify({ ...ids, prompt }),
+      body: JSON.stringify({ conversationId, message: prompt }),
     });
+    const data = (await res.json()) as {
+      conversationId: string;
+      messageId: string;
+    };
+    setMessageId(data.messageId);
     setReady(true);
   };
 
   const replay = async () => {
-    if (!ready) return;
-    const res = await apiFetch(
-      `/scenario3/read-with-cursor?conversationId=${ids.conversationId}&messageId=${ids.messageId}&cursor=${cursor}`
-    );
-    const data = (await res.json()) as {
-      tokens?: string[];
-      nextCursor?: number;
-    };
-    setOutput((prev) => prev + (data.tokens ?? []).join(""));
-    setCursor(data.nextCursor ?? cursor);
+    if (!ready || !messageId) return;
+    sourceRef.current?.close();
+    const url = `/chat/replay?conversationId=${conversationId}&messageId=${messageId}&cursor=${cursor}`;
+    const source = openEventSource(url, {
+      onReplay: (data) => {
+        const payload = parseSseData<{
+          fromSeq: number;
+          toSeq: number;
+          content: string;
+        }>(data);
+        if (payload?.content) {
+          setOutput((prev) => prev + payload.content);
+        }
+        if (typeof payload?.toSeq === "number") {
+          setCursor(payload.toSeq);
+        }
+      },
+      onChunk: (data) => {
+        const payload = parseSseData<{ seq: number; content: string }>(data);
+        if (payload?.content) {
+          setOutput((prev) => prev + payload.content);
+        }
+        if (typeof payload?.seq === "number") {
+          setCursor(payload.seq);
+        }
+      },
+    });
+    sourceRef.current = source;
   };
 
   return (
@@ -184,33 +276,58 @@ const CursorCard = () => {
 };
 
 const BufferCard = () => {
-  const ids = useIds("s4");
+  const conversationId = useConversationId("s4");
+  const sourceRef = useRef<EventSource | null>(null);
   const [prompt, setPrompt] = useState<string>("레이스 컨디션을 설명해줘.");
-  const [cursor, setCursor] = useState<number>(0);
+  const [messageId, setMessageId] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<number>(-1);
   const [output, setOutput] = useState<string>("");
   const [ready, setReady] = useState<boolean>(false);
 
   const invoke = async () => {
     setOutput("");
-    setCursor(0);
-    await apiFetch("/scenario2/write", {
+    setCursor(-1);
+    const res = await apiFetch("/chat/write-start", {
       method: "POST",
-      body: JSON.stringify({ ...ids, prompt }),
+      body: JSON.stringify({ conversationId, message: prompt }),
     });
+    const data = (await res.json()) as {
+      conversationId: string;
+      messageId: string;
+    };
+    setMessageId(data.messageId);
     setReady(true);
   };
 
   const replay = async () => {
-    if (!ready) return;
-    const res = await apiFetch(
-      `/scenario4/read-with-buffer?conversationId=${ids.conversationId}&messageId=${ids.messageId}&cursor=${cursor}`
-    );
-    const data = (await res.json()) as {
-      tokens?: string[];
-      nextCursor?: number;
-    };
-    setOutput((prev) => prev + (data.tokens ?? []).join(""));
-    setCursor(data.nextCursor ?? cursor);
+    if (!ready || !messageId) return;
+    sourceRef.current?.close();
+    const url = `/chat/replay-buffer?conversationId=${conversationId}&messageId=${messageId}&cursor=${cursor}`;
+    const source = openEventSource(url, {
+      onReplay: (data) => {
+        const payload = parseSseData<{
+          fromSeq: number;
+          toSeq: number;
+          content: string;
+        }>(data);
+        if (payload?.content) {
+          setOutput((prev) => prev + payload.content);
+        }
+        if (typeof payload?.toSeq === "number") {
+          setCursor(payload.toSeq);
+        }
+      },
+      onChunk: (data) => {
+        const payload = parseSseData<{ seq: number; content: string }>(data);
+        if (payload?.content) {
+          setOutput((prev) => prev + payload.content);
+        }
+        if (typeof payload?.seq === "number") {
+          setCursor(payload.seq);
+        }
+      },
+    });
+    sourceRef.current = source;
   };
 
   return (

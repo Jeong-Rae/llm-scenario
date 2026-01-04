@@ -113,11 +113,13 @@ const postStream = async (
   setSseHeaders(res);
   const stopHeartbeat = startHeartbeat(res);
   let closed = false;
-
-  req.on("close", () => {
+  const handleClose = () => {
     closed = true;
     stopHeartbeat();
-  });
+  };
+
+  req.on("aborted", handleClose);
+  res.on("close", handleClose);
 
   writeSse(res, "start", { conversationId, messageId });
 

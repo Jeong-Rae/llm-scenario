@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Button, TextInput } from "@vapor-ui/core";
+import { Button, Textarea, TextInput } from "@vapor-ui/core";
 import "@vapor-ui/core/styles.css";
 import "./styles.css";
 
@@ -141,8 +141,13 @@ const StreamCard = () => {
     <div className="card">
       <span className="pill">시나리오 1 · POST + 스트리밍</span>
       <div className="row">
-        <TextInput value={prompt} onValueChange={(value) => setPrompt(value)} />
+        <Textarea
+          autoResize={false}
+          value={prompt}
+          onValueChange={(value) => setPrompt(value)}
+        />
       </div>
+      <div className="meta">총 응답 길이: {output.length}</div>
       <Button onClick={startStream} disabled={busy}>
         {busy ? "스트리밍 중..." : "스트림 시작"}
       </Button>
@@ -191,8 +196,13 @@ const CacheCard = () => {
     <div className="card">
       <span className="pill">시나리오 2 · POST(쓰기) + GET(읽기)</span>
       <div className="row">
-        <TextInput value={prompt} onValueChange={(value) => setPrompt(value)} />
+        <Textarea
+          autoResize={false}
+          value={prompt}
+          onValueChange={(value) => setPrompt(value)}
+        />
       </div>
+      <div className="meta">총 응답 길이: {output.length}</div>
       <Button className="secondary" onClick={invoke} disabled={busy}>
         {busy ? "요청 중..." : "요청"}
       </Button>
@@ -212,25 +222,9 @@ const CursorCard = () => {
   const [output, setOutput] = useState<string>("");
   const [ready, setReady] = useState<boolean>(false);
 
-  const invoke = async () => {
-    setOutput("");
-    setCursor(-1);
-    const res = await apiFetch("/chat/write-start", {
-      method: "POST",
-      body: JSON.stringify({ conversationId, message: prompt }),
-    });
-    const data = (await res.json()) as {
-      conversationId: string;
-      messageId: string;
-    };
-    setMessageId(data.messageId);
-    setReady(true);
-  };
-
-  const replay = async () => {
-    if (!ready || !messageId) return;
+  const openReplayStream = (nextMessageId: string, nextCursor: number) => {
     sourceRef.current?.close();
-    const url = `/chat/replay?conversationId=${conversationId}&messageId=${messageId}&cursor=${cursor}`;
+    const url = `/chat/replay?conversationId=${conversationId}&messageId=${nextMessageId}&cursor=${nextCursor}`;
     const source = openEventSource(url, {
       onReplay: (data) => {
         const payload = parseSseData<{
@@ -258,12 +252,38 @@ const CursorCard = () => {
     sourceRef.current = source;
   };
 
+  const invoke = async () => {
+    setOutput("");
+    setCursor(-1);
+    const res = await apiFetch("/chat/write-start", {
+      method: "POST",
+      body: JSON.stringify({ conversationId, message: prompt }),
+    });
+    const data = (await res.json()) as {
+      conversationId: string;
+      messageId: string;
+    };
+    setMessageId(data.messageId);
+    setReady(true);
+    openReplayStream(data.messageId, -1);
+  };
+
+  const replay = async () => {
+    if (!ready || !messageId) return;
+    openReplayStream(messageId, cursor);
+  };
+
   return (
     <div className="card">
       <span className="pill">시나리오 3 · 커서 리플레이</span>
       <div className="row">
-        <TextInput value={prompt} onValueChange={(value) => setPrompt(value)} />
+        <Textarea
+          autoResize={false}
+          value={prompt}
+          onValueChange={(value) => setPrompt(value)}
+        />
       </div>
+      <div className="meta">총 응답 길이: {output.length}</div>
       <div className="row">
         <Button onClick={invoke}>요청</Button>
         <Button className="secondary" onClick={replay}>
@@ -284,25 +304,9 @@ const BufferCard = () => {
   const [output, setOutput] = useState<string>("");
   const [ready, setReady] = useState<boolean>(false);
 
-  const invoke = async () => {
-    setOutput("");
-    setCursor(-1);
-    const res = await apiFetch("/chat/write-start", {
-      method: "POST",
-      body: JSON.stringify({ conversationId, message: prompt }),
-    });
-    const data = (await res.json()) as {
-      conversationId: string;
-      messageId: string;
-    };
-    setMessageId(data.messageId);
-    setReady(true);
-  };
-
-  const replay = async () => {
-    if (!ready || !messageId) return;
+  const openBufferStream = (nextMessageId: string, nextCursor: number) => {
     sourceRef.current?.close();
-    const url = `/chat/replay-buffer?conversationId=${conversationId}&messageId=${messageId}&cursor=${cursor}`;
+    const url = `/chat/replay-buffer?conversationId=${conversationId}&messageId=${nextMessageId}&cursor=${nextCursor}`;
     const source = openEventSource(url, {
       onReplay: (data) => {
         const payload = parseSseData<{
@@ -330,12 +334,38 @@ const BufferCard = () => {
     sourceRef.current = source;
   };
 
+  const invoke = async () => {
+    setOutput("");
+    setCursor(-1);
+    const res = await apiFetch("/chat/write-start", {
+      method: "POST",
+      body: JSON.stringify({ conversationId, message: prompt }),
+    });
+    const data = (await res.json()) as {
+      conversationId: string;
+      messageId: string;
+    };
+    setMessageId(data.messageId);
+    setReady(true);
+    openBufferStream(data.messageId, -1);
+  };
+
+  const replay = async () => {
+    if (!ready || !messageId) return;
+    openBufferStream(messageId, cursor);
+  };
+
   return (
     <div className="card">
       <span className="pill">시나리오 4 · 커서 + 버퍼</span>
       <div className="row">
-        <TextInput value={prompt} onValueChange={(value) => setPrompt(value)} />
+        <Textarea
+          autoResize={false}
+          value={prompt}
+          onValueChange={(value) => setPrompt(value)}
+        />
       </div>
+      <div className="meta">총 응답 길이: {output.length}</div>
       <div className="row">
         <Button onClick={invoke}>요청</Button>
         <Button className="secondary" onClick={replay}>

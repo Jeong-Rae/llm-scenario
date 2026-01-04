@@ -23,7 +23,7 @@ class FakeAI {
   private jitterMs: number;
   private text: string;
 
-  constructor({ chunkSize = 12, delayMs = 30, jitterMs = 40 }: FakeAIOptions = {}) {
+  constructor({ chunkSize = 12, delayMs = 100, jitterMs = 60 }: FakeAIOptions = {}) {
     this.chunkSize = chunkSize;
     this.delayMs = delayMs;
     this.jitterMs = jitterMs;

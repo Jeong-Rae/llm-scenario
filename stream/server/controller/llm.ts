@@ -67,6 +67,8 @@ type ReadQuery = {
   conversationId?: string;
   messageId?: string;
   cursor?: string;
+  delayDueToNetwork?: string;
+  delayDueToHandoff?: string;
 };
 
 type ConversationParams = {
@@ -150,6 +152,15 @@ const getCursor = (
     }
   }
   return parseCursor(req.query.cursor);
+};
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const getDelayMs = (value?: string) => {
+  if (!value) return 0;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) || parsed <= 0 ? 0 : parsed;
 };
 
 const postStream = async (
@@ -280,7 +291,7 @@ const getReadWindow = (
   req.on("close", cleanup);
 };
 
-const getReplayWithCursor = (
+const getReplayWithCursor = async (
   req: Request<Record<string, never>, unknown, unknown, ReadQuery>,
   res: Response
 ) => {
@@ -296,6 +307,8 @@ const getReplayWithCursor = (
   const stopHeartbeat = startHeartbeat(res);
 
   const cursor = getCursor(req, session.messageId);
+  const networkDelayMs = getDelayMs(req.query.delayDueToNetwork);
+  const handoffDelayMs = getDelayMs(req.query.delayDueToHandoff);
   const replayChunks = session.chunks.filter((chunk) => chunk.seq > cursor);
 
   if (replayChunks.length > 0) {
@@ -304,6 +317,9 @@ const getReplayWithCursor = (
       session.messageId,
       replayChunks[replayChunks.length - 1].seq
     );
+    if (networkDelayMs > 0) {
+      await sleep(networkDelayMs);
+    }
     writeSse(res, "replay", replayContent, replayId);
   }
 
@@ -353,6 +369,10 @@ const getReplayWithCursor = (
     if (!res.writableEnded) res.end();
   };
 
+  if (handoffDelayMs > 0) {
+    await sleep(handoffDelayMs);
+  }
+
   session.emitter.on("chunk", onChunk);
   session.emitter.on("done", onDone);
   session.emitter.on("error", onError);
@@ -360,7 +380,7 @@ const getReplayWithCursor = (
   req.on("close", cleanup);
 };
 
-const getReplayWithBuffer = (
+const getReplayWithBuffer = async (
   req: Request<Record<string, never>, unknown, unknown, ReadQuery>,
   res: Response
 ) => {
@@ -424,6 +444,8 @@ const getReplayWithBuffer = (
   session.emitter.on("error", onError);
 
   const cursor = getCursor(req, session.messageId);
+  const networkDelayMs = getDelayMs(req.query.delayDueToNetwork);
+  const handoffDelayMs = getDelayMs(req.query.delayDueToHandoff);
   const replayChunks = session.chunks.filter((chunk) => chunk.seq > cursor);
 
   if (replayChunks.length > 0) {
@@ -432,7 +454,14 @@ const getReplayWithBuffer = (
       session.messageId,
       replayChunks[replayChunks.length - 1].seq
     );
+    if (networkDelayMs > 0) {
+      await sleep(networkDelayMs);
+    }
     writeSse(res, "replay", replayContent, replayId);
+  }
+
+  if (handoffDelayMs > 0) {
+    await sleep(handoffDelayMs);
   }
 
   const drainBuffer = () => {

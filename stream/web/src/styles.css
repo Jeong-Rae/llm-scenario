@@ -48,6 +48,17 @@ body {
   display: grid;
   gap: 8px;
 }
+.field {
+  display: grid;
+  gap: 4px;
+}
+.delay-input {
+  font: inherit;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--edge);
+  background: var(--panel);
+}
 .prompt-input,
 .prompt-input input,
 .prompt-input textarea {

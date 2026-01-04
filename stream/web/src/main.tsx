@@ -125,6 +125,11 @@ const parseSeqFromEventId = (value: string) => {
   return Number.isNaN(seq) ? null : seq;
 };
 
+const parseDelayInput = (value: string) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
 const useConversationId = (prefix: string): string => {
   const now = useMemo(() => Date.now().toString(36).slice(-6), []);
   return `${prefix}-c-${now}`;
@@ -445,11 +450,28 @@ const CursorCard = () => {
   const [output, setOutput] = useState<string>("");
   const [ready, setReady] = useState<boolean>(false);
   const [listening, setListening] = useState<boolean>(false);
+  const [delayDueToNetwork, setDelayDueToNetwork] = useState<number>(0);
+  const [delayDueToHandoff, setDelayDueToHandoff] = useState<number>(0);
   useAutoScroll(outputRef, output);
+
+  const buildReplayUrl = (
+    path: string,
+    nextMessageId: string,
+    nextCursor: number
+  ) => {
+    const params = new URLSearchParams({
+      conversationId,
+      messageId: nextMessageId,
+      cursor: String(nextCursor),
+      delayDueToNetwork: String(delayDueToNetwork),
+      delayDueToHandoff: String(delayDueToHandoff),
+    });
+    return `${path}?${params.toString()}`;
+  };
 
   const openReplayStream = (nextMessageId: string, nextCursor: number) => {
     sourceRef.current?.close();
-    const url = `/chat/replay?conversationId=${conversationId}&messageId=${nextMessageId}&cursor=${nextCursor}`;
+    const url = buildReplayUrl("/chat/replay", nextMessageId, nextCursor);
     const source = openEventSource(url, {
       onReplay: ({ data, id }) => {
         setOutput((prev) => prev + data);
@@ -516,6 +538,32 @@ const CursorCard = () => {
       </div>
       <div className="meta">총 응답 길이: {output.length}</div>
       <div className="row">
+        <label className="field">
+          <span className="meta">delayDueToNetwork (ms)</span>
+          <input
+            className="delay-input"
+            type="number"
+            min={0}
+            value={delayDueToNetwork}
+            onChange={(event) =>
+              setDelayDueToNetwork(parseDelayInput(event.target.value))
+            }
+          />
+        </label>
+        <label className="field">
+          <span className="meta">delayDueToHandoff (ms)</span>
+          <input
+            className="delay-input"
+            type="number"
+            min={0}
+            value={delayDueToHandoff}
+            onChange={(event) =>
+              setDelayDueToHandoff(parseDelayInput(event.target.value))
+            }
+          />
+        </label>
+      </div>
+      <div className="row">
         <Button onClick={invoke}>요청</Button>
         <Button
           className="secondary"
@@ -545,11 +593,32 @@ const BufferCard = () => {
   const [output, setOutput] = useState<string>("");
   const [ready, setReady] = useState<boolean>(false);
   const [listening, setListening] = useState<boolean>(false);
+  const [delayDueToNetwork, setDelayDueToNetwork] = useState<number>(0);
+  const [delayDueToHandoff, setDelayDueToHandoff] = useState<number>(0);
   useAutoScroll(outputRef, output);
+
+  const buildBufferUrl = (
+    path: string,
+    nextMessageId: string,
+    nextCursor: number
+  ) => {
+    const params = new URLSearchParams({
+      conversationId,
+      messageId: nextMessageId,
+      cursor: String(nextCursor),
+      delayDueToNetwork: String(delayDueToNetwork),
+      delayDueToHandoff: String(delayDueToHandoff),
+    });
+    return `${path}?${params.toString()}`;
+  };
 
   const openBufferStream = (nextMessageId: string, nextCursor: number) => {
     sourceRef.current?.close();
-    const url = `/chat/replay-buffer?conversationId=${conversationId}&messageId=${nextMessageId}&cursor=${nextCursor}`;
+    const url = buildBufferUrl(
+      "/chat/replay-buffer",
+      nextMessageId,
+      nextCursor
+    );
     const source = openEventSource(url, {
       onReplay: ({ data, id }) => {
         setOutput((prev) => prev + data);
@@ -615,6 +684,32 @@ const BufferCard = () => {
         />
       </div>
       <div className="meta">총 응답 길이: {output.length}</div>
+      <div className="row">
+        <label className="field">
+          <span className="meta">delayDueToNetwork (ms)</span>
+          <input
+            className="delay-input"
+            type="number"
+            min={0}
+            value={delayDueToNetwork}
+            onChange={(event) =>
+              setDelayDueToNetwork(parseDelayInput(event.target.value))
+            }
+          />
+        </label>
+        <label className="field">
+          <span className="meta">delayDueToHandoff (ms)</span>
+          <input
+            className="delay-input"
+            type="number"
+            min={0}
+            value={delayDueToHandoff}
+            onChange={(event) =>
+              setDelayDueToHandoff(parseDelayInput(event.target.value))
+            }
+          />
+        </label>
+      </div>
       <div className="row">
         <Button onClick={invoke}>요청</Button>
         <Button

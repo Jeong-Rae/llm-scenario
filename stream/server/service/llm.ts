@@ -1,6 +1,7 @@
-import { EventEmitter } from "events";
-import { randomUUID } from "crypto";
+import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import { FakeAI } from "./fake-ai";
+import { GeminiAI } from "./gemini-ai";
 import { ConversationModel } from "../model/llm";
 
 type AIChunk = { content: string };
@@ -34,13 +35,42 @@ type StartWriteOptions = {
 };
 
 
+const parseEnvNumber = (value?: string): number | undefined => {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const buildDefaultAIFactory = (): AIFactory => {
+  const provider = (process.env.LLM_PROVIDER ?? "fake").toLowerCase();
+  if (provider === "gemini") {
+    const modelName = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+    const temperature = parseEnvNumber(process.env.GEMINI_TEMPERATURE) ?? 0;
+    const topP = parseEnvNumber(process.env.GEMINI_TOP_P) ?? 0.1;
+    const topK = parseEnvNumber(process.env.GEMINI_TOP_K) ?? 1;
+    const maxOutputTokens = parseEnvNumber(
+      process.env.GEMINI_MAX_OUTPUT_TOKENS
+    );
+    return ({ userMessage }) =>
+      new GeminiAI({
+        userMessage,
+        modelName,
+        temperature,
+        topP,
+        topK,
+        maxOutputTokens,
+      });
+  }
+  return (_input) => new FakeAI();
+};
+
 class LLMService {
   private aiFactory: AIFactory;
   private sessions: Map<string, StreamSession>;
   private lastMessageIdByConversation: Map<string, string>;
 
   constructor({ aiFactory }: { aiFactory?: AIFactory } = {}) {
-    this.aiFactory = aiFactory ?? ((_input) => new FakeAI());
+    this.aiFactory = aiFactory ?? buildDefaultAIFactory();
     this.sessions = new Map();
     this.lastMessageIdByConversation = new Map();
   }

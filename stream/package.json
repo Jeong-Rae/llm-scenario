@@ -12,7 +12,8 @@
     "build:server": "tsc -p tsconfig.server.json",
     "dev:web": "vite --config web/vite.config.ts --host",
     "build:web": "vite build --config web/vite.config.ts",
-    "preview:web": "vite preview --config web/vite.config.ts --port 5173"
+    "preview:web": "vite preview --config web/vite.config.ts --port 5173",
+    "e2e:gemini": "node tests/e2e/run-gemini-e2e.js"
   },
   "dependencies": {
     "@langchain/core": "^0.2.30",
@@ -25,6 +26,7 @@
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@types/node": "^25.0.3",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.1",

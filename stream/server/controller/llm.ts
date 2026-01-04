@@ -115,7 +115,7 @@ const writeSse = (
     }
     res.write("\n");
     console.log(
-      `SSE sent event: ${event}, id: ${id ?? "-"}, dataLength: ${data.length}`
+      `SSE sent event: ${event}, id: ${id ?? "-"}, data: ${data}`
     );
     return;
   }

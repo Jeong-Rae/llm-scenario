@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Button, Textarea } from "@vapor-ui/core";
 import "@vapor-ui/core/styles.css";
@@ -130,12 +130,25 @@ const useConversationId = (prefix: string): string => {
   return `${prefix}-c-${now}`;
 };
 
+const useAutoScroll = (
+  ref: { current: HTMLDivElement | null },
+  content: string
+) => {
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    element.scrollTop = element.scrollHeight;
+  }, [content, ref]);
+};
+
 const StreamCard = () => {
   const conversationId = useConversationId("s1");
   const abortRef = useRef<AbortController | null>(null);
-  const [prompt, setPrompt] = useState<string>("간단한 인사말을 작성해줘.");
+  const outputRef = useRef<HTMLDivElement | null>(null);
+  const [prompt, setPrompt] = useState<string>("Lorem Ipsum KR");
   const [output, setOutput] = useState<string>("");
   const [busy, setBusy] = useState<boolean>(false);
+  useAutoScroll(outputRef, output);
 
   const startStream = async () => {
     abortRef.current?.abort();
@@ -198,7 +211,9 @@ const StreamCard = () => {
           중지
         </Button>
       </div>
-      <div className="output">{output}</div>
+      <div className="output" ref={outputRef}>
+        {output}
+      </div>
     </div>
   );
 };
@@ -206,11 +221,13 @@ const StreamCard = () => {
 const CacheCard = () => {
   const conversationId = useConversationId("s2");
   const sourceRef = useRef<EventSource | null>(null);
-  const [prompt, setPrompt] = useState<string>("영화 장면을 요약해줘.");
+  const outputRef = useRef<HTMLDivElement | null>(null);
+ const [prompt, setPrompt] = useState<string>("Lorem Ipsum KR");
   const [output, setOutput] = useState<string>("");
   const [busy, setBusy] = useState<boolean>(false);
   const [messageId, setMessageId] = useState<string | null>(null);
   const [listening, setListening] = useState<boolean>(false);
+  useAutoScroll(outputRef, output);
 
   const startReadWindow = async (nextConversationId: string, id: string) => {
     sourceRef.current?.close();
@@ -286,7 +303,134 @@ const CacheCard = () => {
           재개
         </Button>
       </div>
-      <div className="output">{output}</div>
+      <div className="output" ref={outputRef}>
+        {output}
+      </div>
+    </div>
+  );
+};
+
+const MultiReaderCard = () => {
+  const conversationId = useConversationId("s2r");
+  const readerARef = useRef<EventSource | null>(null);
+  const readerBRef = useRef<EventSource | null>(null);
+  const outputARef = useRef<HTMLDivElement | null>(null);
+  const outputBRef = useRef<HTMLDivElement | null>(null);
+  const [prompt, setPrompt] = useState<string>("Lorem Ipsum KR");
+  const [outputA, setOutputA] = useState<string>("");
+  const [outputB, setOutputB] = useState<string>("");
+  const [busy, setBusy] = useState<boolean>(false);
+  const [messageId, setMessageId] = useState<string | null>(null);
+  const [listeningA, setListeningA] = useState<boolean>(false);
+  const [listeningB, setListeningB] = useState<boolean>(false);
+  useAutoScroll(outputARef, outputA);
+  useAutoScroll(outputBRef, outputB);
+
+  const openReader = (
+    ref: React.MutableRefObject<EventSource | null>,
+    setOutput: React.Dispatch<React.SetStateAction<string>>,
+    setListening: React.Dispatch<React.SetStateAction<boolean>>
+  ) => {
+    if (!messageId) return;
+    ref.current?.close();
+    const url = `/chat/read-window?conversationId=${conversationId}&messageId=${messageId}`;
+    const source = openEventSource(url, {
+      onChunk: ({ data }) => {
+        setOutput((prev) => prev + data);
+      },
+      onDone: () => {
+        setListening(false);
+      },
+      onError: () => {
+        setListening(false);
+      },
+    });
+    ref.current = source;
+    setListening(true);
+  };
+
+  const stopReader = (
+    ref: React.MutableRefObject<EventSource | null>,
+    setListening: React.Dispatch<React.SetStateAction<boolean>>
+  ) => {
+    ref.current?.close();
+    ref.current = null;
+    setListening(false);
+  };
+
+  const invoke = async () => {
+    setBusy(true);
+    setOutputA("");
+    setOutputB("");
+    const res = await apiFetch("/chat/write-start", {
+      method: "POST",
+      body: JSON.stringify({ conversationId, message: prompt }),
+    });
+    const data = (await res.json()) as {
+      conversationId: string;
+      messageId: string;
+    };
+    setMessageId(data.messageId);
+    setBusy(false);
+    openReader(readerARef, setOutputA, setListeningA);
+    openReader(readerBRef, setOutputB, setListeningB);
+  };
+
+  return (
+    <div className="card">
+      <span className="pill">시나리오 2 · 두 명의 리더</span>
+      <div className="row">
+        <Textarea
+          className="prompt-input"
+          autoResize={false}
+          value={prompt}
+          onValueChange={(value) => setPrompt(value)}
+        />
+      </div>
+      <div className="meta">
+        Reader A 길이: {outputA.length} · Reader B 길이: {outputB.length}
+      </div>
+      <div className="row">
+        <Button className="secondary" onClick={invoke} disabled={busy}>
+          {busy ? "요청 중..." : "요청"}
+        </Button>
+      </div>
+      <div className="row">
+        <Button
+          onClick={() => openReader(readerARef, setOutputA, setListeningA)}
+          disabled={!messageId || listeningA}
+        >
+          A 재개
+        </Button>
+        <Button
+          className="secondary"
+          onClick={() => stopReader(readerARef, setListeningA)}
+          disabled={!listeningA}
+        >
+          A 중지
+        </Button>
+      </div>
+      <div className="output" ref={outputARef}>
+        {outputA}
+      </div>
+      <div className="row">
+        <Button
+          onClick={() => openReader(readerBRef, setOutputB, setListeningB)}
+          disabled={!messageId || listeningB}
+        >
+          B 재개
+        </Button>
+        <Button
+          className="secondary"
+          onClick={() => stopReader(readerBRef, setListeningB)}
+          disabled={!listeningB}
+        >
+          B 중지
+        </Button>
+      </div>
+      <div className="output" ref={outputBRef}>
+        {outputB}
+      </div>
     </div>
   );
 };
@@ -294,14 +438,14 @@ const CacheCard = () => {
 const CursorCard = () => {
   const conversationId = useConversationId("s3");
   const sourceRef = useRef<EventSource | null>(null);
-  const [prompt, setPrompt] = useState<string>(
-    "이벤트 스트리밍을 설명해줘."
-  );
+  const outputRef = useRef<HTMLDivElement | null>(null);
+  const [prompt, setPrompt] = useState<string>("Lorem Ipsum KR");
   const [messageId, setMessageId] = useState<string | null>(null);
   const [cursor, setCursor] = useState<number>(-1);
   const [output, setOutput] = useState<string>("");
   const [ready, setReady] = useState<boolean>(false);
   const [listening, setListening] = useState<boolean>(false);
+  useAutoScroll(outputRef, output);
 
   const openReplayStream = (nextMessageId: string, nextCursor: number) => {
     sourceRef.current?.close();
@@ -384,7 +528,9 @@ const CursorCard = () => {
           중지
         </Button>
       </div>
-      <div className="output">{output}</div>
+      <div className="output" ref={outputRef}>
+        {output}
+      </div>
     </div>
   );
 };
@@ -392,12 +538,14 @@ const CursorCard = () => {
 const BufferCard = () => {
   const conversationId = useConversationId("s4");
   const sourceRef = useRef<EventSource | null>(null);
-  const [prompt, setPrompt] = useState<string>("레이스 컨디션을 설명해줘.");
+  const outputRef = useRef<HTMLDivElement | null>(null);
+  const [prompt, setPrompt] = useState<string>("Lorem Ipsum KR");
   const [messageId, setMessageId] = useState<string | null>(null);
   const [cursor, setCursor] = useState<number>(-1);
   const [output, setOutput] = useState<string>("");
   const [ready, setReady] = useState<boolean>(false);
   const [listening, setListening] = useState<boolean>(false);
+  useAutoScroll(outputRef, output);
 
   const openBufferStream = (nextMessageId: string, nextCursor: number) => {
     sourceRef.current?.close();
@@ -480,7 +628,9 @@ const BufferCard = () => {
           중지
         </Button>
       </div>
-      <div className="output">{output}</div>
+      <div className="output" ref={outputRef}>
+        {output}
+      </div>
     </div>
   );
 };
@@ -490,13 +640,13 @@ const App = () => (
     <section className="hero">
       <h1>LLM 스트림 테스트 UI</h1>
       <p>
-        Vapor UI + React 기반의 테스트용 대시보드. 네 가지 시나리오를
-        호출해 토큰 흐름을 확인한다.
+        특정 시나리오 별로 LLM 스트리밍 및 읽기/쓰기 동작을 테스트한다.
       </p>
     </section>
     <section className="grid">
       <StreamCard />
       <CacheCard />
+      <MultiReaderCard />
       <CursorCard />
       <BufferCard />
     </section>

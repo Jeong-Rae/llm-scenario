@@ -80,12 +80,49 @@ const setSseHeaders = (res: Response) => {
   res.flushHeaders?.();
 };
 
-const writeSse = (res: Response, event: string, data?: unknown) => {
+const serializeOffset = (messageId: string, seq: number) =>
+  `${messageId}:${seq}`;
+
+const parseOffset = (value?: string) => {
+  if (!value) return null;
+  const separatorIndex = value.lastIndexOf(":");
+  if (separatorIndex <= 0) return null;
+  const messageId = value.slice(0, separatorIndex);
+  const seq = Number.parseInt(value.slice(separatorIndex + 1), 10);
+  if (Number.isNaN(seq)) return null;
+  return { messageId, seq };
+};
+
+const writeSse = (
+  res: Response,
+  event: string,
+  data?: unknown,
+  id?: string
+) => {
   if (res.writableEnded) return;
-  const payload = data === undefined ? "" : JSON.stringify(data);
   res.write(`event: ${event}\n`);
+  if (id) res.write(`id: ${id}\n`);
+  if (data === undefined) {
+    res.write("data: \n\n");
+    console.log(`SSE sent event: ${event}, id: ${id ?? "-"}`);
+    return;
+  }
+
+  if (typeof data === "string") {
+    const lines = data.split(/\r?\n/);
+    for (const line of lines) {
+      res.write(`data: ${line}\n`);
+    }
+    res.write("\n");
+    console.log(
+      `SSE sent event: ${event}, id: ${id ?? "-"}, dataLength: ${data.length}`
+    );
+    return;
+  }
+
+  const payload = JSON.stringify(data);
   res.write(`data: ${payload}\n\n`);
-  console.log(`SSE sent event: ${event}, data: ${payload}`);
+  console.log(`SSE sent event: ${event}, id: ${id ?? "-"}, data: ${payload}`);
 };
 
 const startHeartbeat = (res: Response) => {
@@ -99,6 +136,20 @@ const parseCursor = (value?: string) => {
   if (!value) return -1;
   const parsed = Number.parseInt(value, 10);
   return Number.isNaN(parsed) ? -1 : parsed;
+};
+
+const getCursor = (
+  req: Request<Record<string, never>, unknown, unknown, ReadQuery>,
+  messageId?: string
+) => {
+  const header = req.headers["last-event-id"];
+  if (typeof header === "string") {
+    const parsed = parseOffset(header);
+    if (parsed && (!messageId || parsed.messageId === messageId)) {
+      return parsed.seq;
+    }
+  }
+  return parseCursor(req.query.cursor);
 };
 
 const postStream = async (
@@ -122,6 +173,7 @@ const postStream = async (
   res.on("close", handleClose);
 
   writeSse(res, "start", { conversationId, messageId });
+  let seq = 0;
 
   await service.streamOnePhase({
     conversationId,
@@ -129,11 +181,14 @@ const postStream = async (
     userMessage: message,
     onChunk: ({ content }) => {
       if (closed) return;
-      writeSse(res, "chunk", { content });
+      const chunkId = serializeOffset(messageId, seq);
+      seq += 1;
+      writeSse(res, "chunk", content, chunkId);
     },
     onDone: () => {
       if (closed) return;
-      writeSse(res, "done", { messageId });
+      const doneId = seq > 0 ? serializeOffset(messageId, seq - 1) : undefined;
+      writeSse(res, "done", { messageId }, doneId);
       stopHeartbeat();
       res.end();
     },
@@ -174,24 +229,36 @@ const getReadWindow = (
   setSseHeaders(res);
   const stopHeartbeat = startHeartbeat(res);
 
+  const lastSeq = session.nextSeq - 1;
+  const lastSeqId =
+    lastSeq >= 0 ? serializeOffset(session.messageId, lastSeq) : undefined;
+
   if (session.error) {
-    writeSse(res, "error", { message: session.error.message });
+    writeSse(res, "error", { message: session.error.message }, lastSeqId);
     stopHeartbeat();
     res.end();
     return;
   }
 
   if (session.done) {
-    writeSse(res, "done", { messageId });
+    writeSse(res, "done", { messageId }, lastSeqId);
     stopHeartbeat();
     res.end();
     return;
   }
 
   const onChunk = (chunk: { seq: number; content: string }) =>
-    writeSse(res, "chunk", chunk);
+    writeSse(
+      res,
+      "chunk",
+      chunk.content,
+      serializeOffset(session.messageId, chunk.seq)
+    );
   const onDone = (payload: { messageId: string }) => {
-    writeSse(res, "done", payload);
+    const doneSeq = session.nextSeq - 1;
+    const doneId =
+      doneSeq >= 0 ? serializeOffset(session.messageId, doneSeq) : undefined;
+    writeSse(res, "done", payload, doneId);
     cleanup();
   };
   const onError = (error: Error) => {
@@ -228,36 +295,50 @@ const getReplayWithCursor = (
   setSseHeaders(res);
   const stopHeartbeat = startHeartbeat(res);
 
-  const cursor = parseCursor(req.query.cursor);
+  const cursor = getCursor(req, session.messageId);
   const replayChunks = session.chunks.filter((chunk) => chunk.seq > cursor);
 
   if (replayChunks.length > 0) {
     const replayContent = replayChunks.map((chunk) => chunk.content).join("");
-    writeSse(res, "replay", {
-      fromSeq: replayChunks[0].seq,
-      toSeq: replayChunks[replayChunks.length - 1].seq,
-      content: replayContent,
-    });
+    const replayId = serializeOffset(
+      session.messageId,
+      replayChunks[replayChunks.length - 1].seq
+    );
+    writeSse(res, "replay", replayContent, replayId);
   }
 
   if (session.error) {
-    writeSse(res, "error", { message: session.error.message });
+    const lastSeq = session.nextSeq - 1;
+    const lastSeqId =
+      lastSeq >= 0 ? serializeOffset(session.messageId, lastSeq) : undefined;
+    writeSse(res, "error", { message: session.error.message }, lastSeqId);
     stopHeartbeat();
     res.end();
     return;
   }
 
   if (session.done) {
-    writeSse(res, "done", { messageId });
+    const lastSeq = session.nextSeq - 1;
+    const lastSeqId =
+      lastSeq >= 0 ? serializeOffset(session.messageId, lastSeq) : undefined;
+    writeSse(res, "done", { messageId }, lastSeqId);
     stopHeartbeat();
     res.end();
     return;
   }
 
   const onChunk = (chunk: { seq: number; content: string }) =>
-    writeSse(res, "chunk", chunk);
+    writeSse(
+      res,
+      "chunk",
+      chunk.content,
+      serializeOffset(session.messageId, chunk.seq)
+    );
   const onDone = (payload: { messageId: string }) => {
-    writeSse(res, "done", payload);
+    const doneSeq = session.nextSeq - 1;
+    const doneId =
+      doneSeq >= 0 ? serializeOffset(session.messageId, doneSeq) : undefined;
+    writeSse(res, "done", payload, doneId);
     cleanup();
   };
   const onError = (error: Error) => {
@@ -304,14 +385,22 @@ const getReplayWithBuffer = (
       buffer.push(chunk);
       return;
     }
-    writeSse(res, "chunk", chunk);
+    writeSse(
+      res,
+      "chunk",
+      chunk.content,
+      serializeOffset(session.messageId, chunk.seq)
+    );
   };
   const onDone = (payload: { messageId: string }) => {
     if (!live) {
       donePayload = payload;
       return;
     }
-    writeSse(res, "done", payload);
+    const doneSeq = session.nextSeq - 1;
+    const doneId =
+      doneSeq >= 0 ? serializeOffset(session.messageId, doneSeq) : undefined;
+    writeSse(res, "done", payload, doneId);
     cleanup();
   };
   const onError = (error: Error) => {
@@ -334,23 +423,28 @@ const getReplayWithBuffer = (
   session.emitter.on("done", onDone);
   session.emitter.on("error", onError);
 
-  const cursor = parseCursor(req.query.cursor);
+  const cursor = getCursor(req, session.messageId);
   const replayChunks = session.chunks.filter((chunk) => chunk.seq > cursor);
 
   if (replayChunks.length > 0) {
     const replayContent = replayChunks.map((chunk) => chunk.content).join("");
-    writeSse(res, "replay", {
-      fromSeq: replayChunks[0].seq,
-      toSeq: replayChunks[replayChunks.length - 1].seq,
-      content: replayContent,
-    });
+    const replayId = serializeOffset(
+      session.messageId,
+      replayChunks[replayChunks.length - 1].seq
+    );
+    writeSse(res, "replay", replayContent, replayId);
   }
 
   const drainBuffer = () => {
     if (buffer.length === 0) return;
     buffer.sort((a, b) => a.seq - b.seq);
     for (const chunk of buffer.splice(0)) {
-      writeSse(res, "chunk", chunk);
+      writeSse(
+        res,
+        "chunk",
+        chunk.content,
+        serializeOffset(session.messageId, chunk.seq)
+      );
     }
   };
 
@@ -358,7 +452,10 @@ const getReplayWithBuffer = (
   live = true;
 
   if (donePayload || session.done) {
-    writeSse(res, "done", donePayload ?? { messageId });
+    const doneSeq = session.nextSeq - 1;
+    const doneId =
+      doneSeq >= 0 ? serializeOffset(session.messageId, doneSeq) : undefined;
+    writeSse(res, "done", donePayload ?? { messageId }, doneId);
     cleanup();
     return;
   }

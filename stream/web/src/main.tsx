@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Button, Textarea, TextInput } from "@vapor-ui/core";
+import { Button, Textarea } from "@vapor-ui/core";
 import "@vapor-ui/core/styles.css";
 import "./styles.css";
 
@@ -13,18 +13,30 @@ const apiFetch = (path: string, options?: RequestInit) =>
 type SseEvent = {
   event: string;
   data: string;
+  id: string;
+};
+
+type SsePayload = {
+  data: string;
+  id: string;
+};
+
+type SseErrorPayload = {
+  data: string | null;
+  id: string;
 };
 
 type EventSourceHandlers = {
-  onChunk?: (data: string) => void;
-  onReplay?: (data: string) => void;
-  onDone?: (data: string) => void;
-  onError?: (data: string | null) => void;
+  onChunk?: (payload: SsePayload) => void;
+  onReplay?: (payload: SsePayload) => void;
+  onDone?: (payload: SsePayload) => void;
+  onError?: (payload: SseErrorPayload) => void;
 };
 
 const readPostSseStream = async (
   res: Response,
-  onEvent: (event: SseEvent) => void
+  onEvent: (event: SseEvent) => void,
+  signal?: AbortSignal
 ) => {
   if (!res.body) return;
   const reader = res.body.getReader();
@@ -32,6 +44,10 @@ const readPostSseStream = async (
   let buffer = "";
 
   while (true) {
+    if (signal?.aborted) {
+      await reader.cancel();
+      break;
+    }
     const { value, done } = await reader.read();
     if (done) break;
     if (!value) continue;
@@ -42,6 +58,7 @@ const readPostSseStream = async (
     for (const part of parts) {
       const lines = part.split("\n");
       let event = "message";
+      let id = "";
       const dataLines: string[] = [];
 
       for (const line of lines) {
@@ -50,13 +67,17 @@ const readPostSseStream = async (
           event = line.slice("event:".length).trim();
           continue;
         }
+        if (line.startsWith("id:")) {
+          id = line.slice("id:".length).trim();
+          continue;
+        }
         if (line.startsWith("data:")) {
           dataLines.push(line.slice("data:".length).trim());
         }
       }
 
       if (dataLines.length === 0) continue;
-      onEvent({ event, data: dataLines.join("\n") });
+      onEvent({ event, data: dataLines.join("\n"), id });
     }
   }
 };
@@ -68,13 +89,12 @@ const openEventSource = (url: string, handlers: EventSourceHandlers) => {
 
   const bindMessage = (
     eventName: "chunk" | "replay" | "done",
-    handler?: (data: string) => void
+    handler?: (payload: SsePayload) => void
   ) => {
     if (!handler) return;
     source.addEventListener(eventName, (event) => {
-      if ("data" in event && typeof event.data === "string") {
-        handler(event.data);
-      }
+      const message = event as MessageEvent<string>;
+      handler({ data: message.data ?? "", id: message.lastEventId ?? "" });
       if (eventName === "done") {
         closed = true;
         close();
@@ -87,22 +107,22 @@ const openEventSource = (url: string, handlers: EventSourceHandlers) => {
   bindMessage("done", handlers.onDone);
 
   source.addEventListener("error", (event) => {
-    const data =
-      "data" in event && typeof event.data === "string" ? event.data : null;
+    const message = event as MessageEvent<string>;
+    const data = typeof message.data === "string" ? message.data : null;
     if (closed) return;
-    handlers.onError?.(data);
+    handlers.onError?.({ data, id: message.lastEventId ?? "" });
     close();
   });
 
   return source;
 };
 
-const parseSseData = <T,>(data: string): T | null => {
-  try {
-    return JSON.parse(data) as T;
-  } catch {
-    return null;
-  }
+const parseSeqFromEventId = (value: string) => {
+  if (!value) return null;
+  const separatorIndex = value.lastIndexOf(":");
+  if (separatorIndex <= 0) return null;
+  const seq = Number.parseInt(value.slice(separatorIndex + 1), 10);
+  return Number.isNaN(seq) ? null : seq;
 };
 
 const useConversationId = (prefix: string): string => {
@@ -112,28 +132,47 @@ const useConversationId = (prefix: string): string => {
 
 const StreamCard = () => {
   const conversationId = useConversationId("s1");
+  const abortRef = useRef<AbortController | null>(null);
   const [prompt, setPrompt] = useState<string>("간단한 인사말을 작성해줘.");
   const [output, setOutput] = useState<string>("");
   const [busy, setBusy] = useState<boolean>(false);
 
   const startStream = async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setBusy(true);
     setOutput("");
-    const res = await apiFetch("/chat/one-phase", {
-      method: "POST",
-      body: JSON.stringify({ conversationId, message: prompt }),
-    });
-    await readPostSseStream(res, ({ event, data }) => {
-      if (event === "chunk") {
-        const payload = parseSseData<{ content: string }>(data);
-        if (payload?.content) {
-          setOutput((prev) => prev + payload.content);
+    try {
+      const res = await apiFetch("/chat/one-phase", {
+        method: "POST",
+        body: JSON.stringify({ conversationId, message: prompt }),
+        signal: controller.signal,
+      });
+    await readPostSseStream(
+      res,
+      ({ event, data }) => {
+        if (event === "chunk") {
+          setOutput((prev) => prev + data);
         }
+        if (event === "done" || event === "error") {
+          setBusy(false);
+        }
+      },
+      controller.signal
+    );
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
       }
-      if (event === "done" || event === "error") {
-        setBusy(false);
-      }
-    });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stopStream = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
     setBusy(false);
   };
 
@@ -142,15 +181,23 @@ const StreamCard = () => {
       <span className="pill">시나리오 1 · POST + 스트리밍</span>
       <div className="row">
         <Textarea
+          className="prompt-input"
           autoResize={false}
           value={prompt}
           onValueChange={(value) => setPrompt(value)}
         />
       </div>
       <div className="meta">총 응답 길이: {output.length}</div>
-      <Button onClick={startStream} disabled={busy}>
-        {busy ? "스트리밍 중..." : "스트림 시작"}
-      </Button>
+      <div className="row">
+        <Button onClick={startStream} disabled={busy}>
+          {busy ? "스트리밍 중..." : "스트림 시작"}
+        </Button>
+      </div>
+      <div className="row">
+        <Button onClick={stopStream} disabled={!busy}>
+          중지
+        </Button>
+      </div>
       <div className="output">{output}</div>
     </div>
   );
@@ -162,19 +209,25 @@ const CacheCard = () => {
   const [prompt, setPrompt] = useState<string>("영화 장면을 요약해줘.");
   const [output, setOutput] = useState<string>("");
   const [busy, setBusy] = useState<boolean>(false);
+  const [messageId, setMessageId] = useState<string | null>(null);
+  const [listening, setListening] = useState<boolean>(false);
 
   const startReadWindow = async (nextConversationId: string, id: string) => {
     sourceRef.current?.close();
     const url = `/chat/read-window?conversationId=${nextConversationId}&messageId=${id}`;
     const source = openEventSource(url, {
-      onChunk: (data) => {
-        const payload = parseSseData<{ content: string }>(data);
-        if (payload?.content) {
-          setOutput((prev) => prev + payload.content);
-        }
+      onChunk: ({ data }) => {
+        setOutput((prev) => prev + data);
+      },
+      onDone: () => {
+        setListening(false);
+      },
+      onError: () => {
+        setListening(false);
       },
     });
     sourceRef.current = source;
+    setListening(true);
   };
 
   const invoke = async () => {
@@ -188,8 +241,20 @@ const CacheCard = () => {
       conversationId: string;
       messageId: string;
     };
+    setMessageId(data.messageId);
     setBusy(false);
     await startReadWindow(data.conversationId, data.messageId);
+  };
+
+  const stopReadWindow = () => {
+    sourceRef.current?.close();
+    sourceRef.current = null;
+    setListening(false);
+  };
+
+  const resumeReadWindow = () => {
+    if (!messageId || listening) return;
+    startReadWindow(conversationId, messageId);
   };
 
   return (
@@ -197,15 +262,30 @@ const CacheCard = () => {
       <span className="pill">시나리오 2 · POST(쓰기) + GET(읽기)</span>
       <div className="row">
         <Textarea
+          className="prompt-input"
           autoResize={false}
           value={prompt}
           onValueChange={(value) => setPrompt(value)}
         />
       </div>
       <div className="meta">총 응답 길이: {output.length}</div>
-      <Button className="secondary" onClick={invoke} disabled={busy}>
-        {busy ? "요청 중..." : "요청"}
-      </Button>
+      <div className="row">
+        <Button className="secondary" onClick={invoke} disabled={busy}>
+          {busy ? "요청 중..." : "요청"}
+        </Button>
+      </div>
+      <div className="row">
+        <Button onClick={stopReadWindow} disabled={!listening}>
+          중지
+        </Button>
+        <Button
+          className="secondary"
+          onClick={resumeReadWindow}
+          disabled={!messageId || listening}
+        >
+          재개
+        </Button>
+      </div>
       <div className="output">{output}</div>
     </div>
   );
@@ -221,35 +301,35 @@ const CursorCard = () => {
   const [cursor, setCursor] = useState<number>(-1);
   const [output, setOutput] = useState<string>("");
   const [ready, setReady] = useState<boolean>(false);
+  const [listening, setListening] = useState<boolean>(false);
 
   const openReplayStream = (nextMessageId: string, nextCursor: number) => {
     sourceRef.current?.close();
     const url = `/chat/replay?conversationId=${conversationId}&messageId=${nextMessageId}&cursor=${nextCursor}`;
     const source = openEventSource(url, {
-      onReplay: (data) => {
-        const payload = parseSseData<{
-          fromSeq: number;
-          toSeq: number;
-          content: string;
-        }>(data);
-        if (payload?.content) {
-          setOutput((prev) => prev + payload.content);
-        }
-        if (typeof payload?.toSeq === "number") {
-          setCursor(payload.toSeq);
+      onReplay: ({ data, id }) => {
+        setOutput((prev) => prev + data);
+        const nextSeq = parseSeqFromEventId(id);
+        if (nextSeq !== null) {
+          setCursor(nextSeq);
         }
       },
-      onChunk: (data) => {
-        const payload = parseSseData<{ seq: number; content: string }>(data);
-        if (payload?.content) {
-          setOutput((prev) => prev + payload.content);
+      onChunk: ({ data, id }) => {
+        setOutput((prev) => prev + data);
+        const nextSeq = parseSeqFromEventId(id);
+        if (nextSeq !== null) {
+          setCursor(nextSeq);
         }
-        if (typeof payload?.seq === "number") {
-          setCursor(payload.seq);
-        }
+      },
+      onDone: () => {
+        setListening(false);
+      },
+      onError: () => {
+        setListening(false);
       },
     });
     sourceRef.current = source;
+    setListening(true);
   };
 
   const invoke = async () => {
@@ -273,11 +353,18 @@ const CursorCard = () => {
     openReplayStream(messageId, cursor);
   };
 
+  const stopReplay = () => {
+    sourceRef.current?.close();
+    sourceRef.current = null;
+    setListening(false);
+  };
+
   return (
     <div className="card">
       <span className="pill">시나리오 3 · 커서 리플레이</span>
       <div className="row">
         <Textarea
+          className="prompt-input"
           autoResize={false}
           value={prompt}
           onValueChange={(value) => setPrompt(value)}
@@ -286,8 +373,15 @@ const CursorCard = () => {
       <div className="meta">총 응답 길이: {output.length}</div>
       <div className="row">
         <Button onClick={invoke}>요청</Button>
-        <Button className="secondary" onClick={replay}>
-          커서부터 다시 받기
+        <Button
+          className="secondary"
+          onClick={replay}
+          disabled={!ready || !messageId || listening}
+        >
+          재개(커서)
+        </Button>
+        <Button onClick={stopReplay} disabled={!listening}>
+          중지
         </Button>
       </div>
       <div className="output">{output}</div>
@@ -303,35 +397,35 @@ const BufferCard = () => {
   const [cursor, setCursor] = useState<number>(-1);
   const [output, setOutput] = useState<string>("");
   const [ready, setReady] = useState<boolean>(false);
+  const [listening, setListening] = useState<boolean>(false);
 
   const openBufferStream = (nextMessageId: string, nextCursor: number) => {
     sourceRef.current?.close();
     const url = `/chat/replay-buffer?conversationId=${conversationId}&messageId=${nextMessageId}&cursor=${nextCursor}`;
     const source = openEventSource(url, {
-      onReplay: (data) => {
-        const payload = parseSseData<{
-          fromSeq: number;
-          toSeq: number;
-          content: string;
-        }>(data);
-        if (payload?.content) {
-          setOutput((prev) => prev + payload.content);
-        }
-        if (typeof payload?.toSeq === "number") {
-          setCursor(payload.toSeq);
+      onReplay: ({ data, id }) => {
+        setOutput((prev) => prev + data);
+        const nextSeq = parseSeqFromEventId(id);
+        if (nextSeq !== null) {
+          setCursor(nextSeq);
         }
       },
-      onChunk: (data) => {
-        const payload = parseSseData<{ seq: number; content: string }>(data);
-        if (payload?.content) {
-          setOutput((prev) => prev + payload.content);
+      onChunk: ({ data, id }) => {
+        setOutput((prev) => prev + data);
+        const nextSeq = parseSeqFromEventId(id);
+        if (nextSeq !== null) {
+          setCursor(nextSeq);
         }
-        if (typeof payload?.seq === "number") {
-          setCursor(payload.seq);
-        }
+      },
+      onDone: () => {
+        setListening(false);
+      },
+      onError: () => {
+        setListening(false);
       },
     });
     sourceRef.current = source;
+    setListening(true);
   };
 
   const invoke = async () => {
@@ -355,11 +449,18 @@ const BufferCard = () => {
     openBufferStream(messageId, cursor);
   };
 
+  const stopReplay = () => {
+    sourceRef.current?.close();
+    sourceRef.current = null;
+    setListening(false);
+  };
+
   return (
     <div className="card">
       <span className="pill">시나리오 4 · 커서 + 버퍼</span>
       <div className="row">
         <Textarea
+          className="prompt-input"
           autoResize={false}
           value={prompt}
           onValueChange={(value) => setPrompt(value)}
@@ -368,8 +469,15 @@ const BufferCard = () => {
       <div className="meta">총 응답 길이: {output.length}</div>
       <div className="row">
         <Button onClick={invoke}>요청</Button>
-        <Button className="secondary" onClick={replay}>
-          버퍼 포함 재수신
+        <Button
+          className="secondary"
+          onClick={replay}
+          disabled={!ready || !messageId || listening}
+        >
+          재개(버퍼)
+        </Button>
+        <Button onClick={stopReplay} disabled={!listening}>
+          중지
         </Button>
       </div>
       <div className="output">{output}</div>
